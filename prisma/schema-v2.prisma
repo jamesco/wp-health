@@ -1,0 +1,254 @@
+// This is your Prisma schema file
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// USER & SUBSCRIPTION MODELS
+// ============================================================================
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  subscription   Subscription?
+  claimedLeads   LeadClaim[]
+  emailTemplates EmailTemplate[]
+}
+
+enum SubscriptionTier {
+  FREE      // 10 leads/week
+  BASIC     // 100 leads/month - $49
+  PRO       // 250 leads/month + filtering + contact - $299
+}
+
+model Subscription {
+  id     String           @id @default(cuid())
+  userId String           @unique
+  user   User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tier   SubscriptionTier @default(FREE)
+
+  // Stripe
+  stripeCustomerId     String?   @unique
+  stripeSubscriptionId String?   @unique
+  stripePriceId        String?
+  status               String    @default("active") // active, canceled, past_due, trialing
+
+  currentPeriodStart DateTime  @default(now())
+  currentPeriodEnd   DateTime?
+  cancelAtPeriodEnd  Boolean   @default(false)
+
+  // Usage tracking
+  leadsClaimedThisMonth Int      @default(0)
+  monthStartDate        DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tier])
+  @@index([status])
+}
+
+// ============================================================================
+// LEAD MODELS - Central database of leads
+// ============================================================================
+
+model Lead {
+  id           String  @id @default(cuid())
+  url          String  @unique
+  businessName String?
+
+  // WordPress info
+  isWordPress Boolean @default(false)
+  wpVersion   String?
+  wpOutdated  Boolean @default(false)
+
+  plugins     Json? // Array of {name, version, slug}
+  themes      Json? // Array of {name, version, slug}
+  woocommerce Json? // {detected, version}
+
+  // Categorization
+  category String? // "hair salon", "restaurant", "dentist", etc.
+  location String? // "New York, NY"
+  niche    String? // Broader category grouping
+
+  // Scoring
+  score         Int?     // 0-100 based on how outdated
+  lastScannedAt DateTime @default(now())
+  scanCount     Int      @default(1)
+
+  // Status
+  status String @default("available") // available, stale, invalid
+
+  // Contact info (premium feature)
+  contactInfo   ContactInfo?
+
+  // Tracking
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  claims LeadClaim[]
+
+  @@index([isWordPress])
+  @@index([category])
+  @@index([location])
+  @@index([score])
+  @@index([status])
+  @@index([lastScannedAt])
+  @@index([createdAt])
+}
+
+// Track which users received which leads (no duplicates)
+model LeadClaim {
+  id     String @id @default(cuid())
+  userId String
+  leadId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lead   Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  claimedAt DateTime @default(now())
+  viewed    Boolean  @default(false)
+  viewedAt  DateTime?
+
+  @@unique([userId, leadId]) // Each user can only claim a lead once
+  @@index([userId])
+  @@index([leadId])
+  @@index([claimedAt])
+}
+
+// Contact information for leads (premium feature)
+model ContactInfo {
+  id     String @id @default(cuid())
+  leadId String @unique
+  lead   Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  email   String?
+  phone   String?
+  address String?
+
+  // Social media
+  facebook  String?
+  instagram String?
+  linkedin  String?
+
+  // Verification
+  verified   Boolean  @default(false)
+  verifiedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([verified])
+}
+
+// ============================================================================
+// SCANNING CONFIGURATION
+// ============================================================================
+
+// Niches that the system automatically scans
+model ScanNiche {
+  id          String  @id @default(cuid())
+  name        String  @unique // "Hair Salons"
+  category    String  // "hair salon"
+  enabled     Boolean @default(true)
+  priority    Int     @default(1) // Higher = scanned more frequently
+
+  // Search templates
+  searchQueries Json // Array of queries like ["hair salons in {city}", "barbers in {city}"]
+  locations     Json // Array of locations to scan ["NYC", "LA", "Chicago"]
+
+  // Frequency
+  scanFrequency String @default("weekly") // daily, weekly, monthly
+  lastScannedAt DateTime?
+  nextScanAt    DateTime?
+
+  // Stats
+  totalLeadsFound Int @default(0)
+  lastScanLeads   Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([enabled])
+  @@index([nextScanAt])
+  @@index([priority])
+}
+
+// ============================================================================
+// LEAD DISTRIBUTION BATCHES
+// ============================================================================
+
+// Track batches of leads sent to users
+model LeadBatch {
+  id        String   @id @default(cuid())
+  tier      SubscriptionTier
+  period    String   // "2024-01" for monthly batches, "2024-W01" for weekly
+
+  leadCount Int      @default(0)
+  delivered Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@unique([tier, period])
+  @@index([period])
+  @@index([delivered])
+}
+
+// ============================================================================
+// EMAIL TEMPLATES (Future feature)
+// ============================================================================
+
+model EmailTemplate {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name    String
+  subject String
+  body    String @db.Text
+
+  // Variables available: {businessName}, {url}, {wpVersion}, {pluginCount}
+
+  isDefault Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// ============================================================================
+// SYSTEM LOGS
+// ============================================================================
+
+model ScanLog {
+  id String @id @default(cuid())
+
+  nicheId String?
+  query   String
+
+  status        String // completed, failed, partial
+  sitesFound    Int    @default(0)
+  sitesScanned  Int    @default(0)
+  leadsFound    Int    @default(0)
+
+  duration Int? // milliseconds
+  error    String?
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  @@index([status])
+  @@index([startedAt])
+}
