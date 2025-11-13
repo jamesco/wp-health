@@ -1,0 +1,108 @@
+// This is your Prisma schema file
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  subscription Subscription?
+  searches     Search[]
+  leads        Lead[]
+}
+
+model Subscription {
+  id               String    @id @default(cuid())
+  userId           String    @unique
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  stripeCustomerId String    @unique
+  stripeSubscriptionId String @unique
+  stripePriceId    String
+  status           String    // active, canceled, past_due, etc.
+
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  cancelAtPeriodEnd  Boolean  @default(false)
+
+  leadsPerWeek     Int       @default(50)
+  leadsUsedThisWeek Int      @default(0)
+  weekStartDate    DateTime  @default(now())
+
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+}
+
+model Search {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  query     String   // e.g., "hair salons in NYC"
+  category  String?  // e.g., "hair salon"
+  location  String?  // e.g., "NYC"
+
+  status    String   @default("pending") // pending, processing, completed, failed
+  totalSites Int     @default(0)
+  wpSitesFound Int   @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  leads     Lead[]
+}
+
+model Lead {
+  id        String   @id @default(cuid())
+  searchId  String
+  search    Search   @relation(fields: [searchId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  url       String
+  businessName String?
+
+  isWordPress Boolean @default(false)
+  wpVersion   String?
+  wpOutdated  Boolean @default(false)
+
+  plugins     Json?   // Array of {name, version, outdated, latestVersion}
+  themes      Json?   // Array of {name, version}
+  woocommerce Json?   // {version, outdated, latestVersion}
+
+  contactInfo Json?   // {email, phone, address}
+
+  score       Int?    // 0-100 score based on how outdated the site is
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+  @@index([searchId])
+  @@index([isWordPress])
+}
+
+model ScanJob {
+  id        String   @id @default(cuid())
+  searchId  String
+  url       String
+  status    String   @default("pending") // pending, processing, completed, failed
+  retries   Int      @default(0)
+  error     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+}
