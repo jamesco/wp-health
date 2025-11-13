@@ -1,8 +1,12 @@
 import { PrismaClient } from '@prisma/client';
 import { GoogleScraper, BusinessResult } from './googleScraper';
 import { WordPressDetector, WordPressInfo } from './wordpressDetector';
+import { queueSearch } from '../jobs';
 
 const prisma = new PrismaClient();
+
+// Feature flag to use job queue or legacy in-memory processing
+const USE_JOB_QUEUE = process.env.USE_JOB_QUEUE === 'true';
 
 export class ScanService {
   private googleScraper: GoogleScraper;
@@ -15,6 +19,9 @@ export class ScanService {
 
   /**
    * Start a new scan for WordPress sites
+   *
+   * With USE_JOB_QUEUE=true: Queues job in Redis for background processing
+   * With USE_JOB_QUEUE=false: Runs in-memory (legacy mode)
    */
   async startScan(userId: string, query: string, category?: string, location?: string): Promise<string> {
     // Check user's subscription and remaining leads
@@ -57,14 +64,21 @@ export class ScanService {
       },
     });
 
-    // Start the scan asynchronously (don't await)
-    this.executeScan(search.id, userId, query).catch(error => {
-      console.error(`Scan ${search.id} failed:`, error);
-      prisma.search.update({
-        where: { id: search.id },
-        data: { status: 'failed' },
+    if (USE_JOB_QUEUE) {
+      // Queue the scan job in Redis for background processing
+      console.log(`Queueing search ${search.id} for background processing`);
+      await queueSearch(search.id, userId, query, category, location);
+    } else {
+      // Legacy: Start the scan asynchronously in-memory (don't await)
+      console.log(`Starting search ${search.id} in-memory (legacy mode)`);
+      this.executeScan(search.id, userId, query).catch(error => {
+        console.error(`Scan ${search.id} failed:`, error);
+        prisma.search.update({
+          where: { id: search.id },
+          data: { status: 'failed' },
+        });
       });
-    });
+    }
 
     return search.id;
   }
